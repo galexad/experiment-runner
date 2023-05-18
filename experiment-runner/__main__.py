@@ -1,6 +1,7 @@
 import sys
 import traceback
-import dill as pickle
+sys.path.append('/home/gabbie/.local/lib/python3.10/site-packages')
+import dill
 import hashlib
 import ast
 from typing import List
@@ -45,7 +46,7 @@ def calc_ast_md5sum(src, name):
             elif isinstance(docstring_node, ast.Constant) and isinstance(docstring_node.value, str):
                 docstring_node.value = ''
 
-    return hashlib.md5(pickle.dumps(tree)).digest()
+    return hashlib.md5(dill.dumps(tree)).digest()
 
 
 if __name__ == "__main__":
@@ -59,7 +60,7 @@ if __name__ == "__main__":
             if hasattr(config_file, 'RunnerConfig'):
                 config = config_file.RunnerConfig()                         # Instantiate config from injected file
                 metadata = Metadata(
-                    calc_ast_md5sum(pickle.source.getsource(config_file), sys.argv[1])  # hash of the whole file, not just RunnerConfig
+                    calc_ast_md5sum(dill.source.getsource(config_file), sys.argv[1])  # hash of the whole file, not just RunnerConfig
                 )
 
                 ConfigValidator.validate_config(config)                     # Validate config as a valid RunnerConfig
