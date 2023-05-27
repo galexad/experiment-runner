@@ -48,6 +48,8 @@ class RunnerConfig:
     This can be essential to accommodate for cooldown periods on some systems."""
     time_between_runs_in_ms:    int             = 1000
 
+    host_name = HOST.GL6.value 
+
     # Dynamic configurations can be one-time satisfied here before the program takes the config as-is
     # e.g. Setting some variable based on some criteria
     def __init__(self):
@@ -95,7 +97,6 @@ class RunnerConfig:
 
         output.console_log("Config.before_run() called!")
 
-
     def extract_level(self, level):
         return level.lower()
 
@@ -112,23 +113,19 @@ class RunnerConfig:
 
         output.console_log("Config.start_run() called!")
 
-        host_name = HOST.GL6.value
         workload = self.extract_level(context.run_variation['workload'])
 
-        conn_handler = ConnectionHandler(host_name, context)
+        conn_handler = ConnectionHandler(self.host_name, context)
         _, _, password = conn_handler.get_credentials()
 
         # start deploying the train ticketing system 
         tts_deployment_start = f"tmux new -s train -d 'cd ~/smartwatts-evaluation/train-ticketing-system; echo { password } | sudo -S docker-compose up'"
-        if(conn_handler.execute_remote_command(tts_deployment_start, f"Running with { workload } workload") == 0):
+        if(conn_handler.execute_remote_command(tts_deployment_start, f"Running with {workload} workload") == 0):
             self.interrupt_run(context, "Encountered an error while starting system")
 
         output.console_log("Waiting for the benchmark system to start up...")
-
-        # wait for system to start up
-        output.console_log("Sleep 10 minutes...")
-        time.sleep(10*10)
-
+        # sleep for 10 minutes until the deployment is complete
+        time.sleep(60 * 10) 
         output.console_log("Benchmark system is up and running")
 
     def start_measurement(self, context: RunnerContext) -> None:
@@ -136,14 +133,12 @@ class RunnerConfig:
         output.console_log("Config.start_measurement() called!")
         
         file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
-        host_name = HOST.GL6.value
-        # start SmartWatts profiler on GL6
-        output.console_log("Retrieving credentials for GL6")
-        conn_handler = ConnectionHandler(host_name, context)
 
+        # start SmartWatts profiler on GL6
+        conn_handler = ConnectionHandler(self.host_name, context)
         _, _, passwordGL6 = conn_handler.get_credentials()
 
-        smartwatts_command = f"tmux new -s smartwatts -d 'cd ~/smartwatts-evaluation/Smartwatts; echo { passwordGL6 } | sudo -S docker-compose up'"
+        smartwatts_command = f"tmux new -s smartwatts -d 'cd ~/smartwatts-evaluation/Smartwatts; echo {passwordGL6} | sudo -S docker-compose up'"
         if(conn_handler.execute_remote_command(smartwatts_command, "SmartWatts start") == 0):
             self.interrupt_run(context, "Encountered an error while starting system")
 
@@ -153,10 +148,10 @@ class RunnerConfig:
 
         output.console_log("Config.interact() called!")
         workload_value = Workload[context.run_variation['workload']].value
-        output.console_log(f"Load testing with K6 - {context.run_variation['workload']} workload: { workload_value }")
+        output.console_log(f"Load testing with K6 - {context.run_variation['workload']} workload: {workload_value}")
 
-        os.system(f"for i in $(ls /home/gabbie/smartwatts-evaluation/k6-test); "
-                  f"do k6 run - </home/gabbie/smartwatts-evaluation/k6-test/$i/script.js --vus { workload_value } --duration 20s ; done")
+        os.system(f"for i in $(ls ~/smartwatts-evaluation/k6-test); "
+                  f"do k6 run - <~/smartwatts-evaluation/k6-test/$i/script.js --vus {workload_value} --duration 20s ; done")
 
         output.console_log('Finished load testing')
 
@@ -170,16 +165,15 @@ class RunnerConfig:
         Activities after stopping the run should also be performed here."""
 
         output.console_log("Config.stop_run() called!")
-        host_name = HOST.GL6.value
-        conn_handler = ConnectionHandler(host_name, context)
+        conn_handler = ConnectionHandler(self.host_name, context)
 
         _, _, password = conn_handler.get_credentials()
 
         # restart docker and remove the created resources 
-        prune_docker_volumes = f"echo { password } | sudo -S docker volume prune"
+        prune_docker_volumes = f"echo {password} | sudo -S docker volume prune"
         conn_handler.execute_remote_command(prune_docker_volumes , "Prune volumes")
 
-        restart_docker_command = f"echo { password } | sudo -S systemctl restart docker.service"
+        restart_docker_command = f"echo {password} | sudo -S systemctl restart docker.service"
         conn_handler.execute_remote_command(restart_docker_command , "Restart docker system")
         
         # Kill tmux sessions

@@ -16,7 +16,7 @@ class ConnectionHandler:
         if err != b'':
             output.console_log(err)
             return 0
-        output.console_log(f"'{ command_name }' command successfully executed")
+        output.console_log(f"'{command_name}' command successfully executed")
         return 1
 
     def connect_to_host(self):
@@ -24,7 +24,7 @@ class ConnectionHandler:
         # connect to server
         con = paramiko.SSHClient()
         con.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        con.connect(host, username=username, password=password)
+        con.connect(host, username = username, password = password)
         output.console_log(f"Connection successful to {self.host_name}")
 
         return con
