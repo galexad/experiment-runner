@@ -201,10 +201,7 @@ class RunnerConfig:
         wattsup_command = f"echo { passwordGL4 } | sudo -S ~/wattsup/start_wattsup_new.sh { file_name } {context.run_variation['run_number']} train-ticket"
         remote_command(HOST.GL4, wattsup_command, f"Wattsup meter start on { HOST.GL4 }")
         
-        # start SmartWatts profiler on GL6
-        _, _, passwordGL6 = get_credentials(HOST.GL6)
-        smartwatts_command = f"cd ~/smartwatts-evaluation/train-ticketing-system; echo { passwordGL6 } | sudo docker-compose  { file_name } {context.run_variation['run_number']}"
-        remote_command(HOST.GL6, smartwatts_command, "SmartWatts start")
+c
 
     def interact(self, context: RunnerContext) -> None:
         """Perform any interaction with the running target system here, or block here until the target finishes."""

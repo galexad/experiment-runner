@@ -11,8 +11,11 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 from os.path import dirname, realpath
 
+from ConnectionHandler import ConnectionHandler
+
 import paramiko
 import enum
+import time
 import os
 
 
@@ -21,46 +24,10 @@ class HOST(enum.Enum):
     GL4 = "GL4"
     GL6 = "GL6"
 
-
 class Workload(enum.Enum):
     LOW = 25
     MEDIUM = 50
     HIGH = 100
-
-def remote_command(connection_name, command, measurement_name):
-    con = get_paramiko_connection(connection_name)
-
-    output.console_log(f'Starting { measurement_name } meter')
-    stdin, stdout, stderr = con.exec_command(command)
-    err = stderr.read()
-    if err != b'':
-        output.console_log(err)
-    output.console_log(f'{ measurement_name } successfully executed')
-
-def get_paramiko_connection(connection_name):
-    host, username, password = get_credentials(connection_name)
-    # connect to server
-    con = paramiko.SSHClient()
-    con.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    con.connect(host, username=username, password=password)
-    output.console_log(f"Connection successful to {connection_name}")
-
-    return con
-
-def get_credentials(host_name):
-    # declare credentials
-    host = os.getenv(f"{host_name}_HOST")
-    username = os.getenv(f"{host_name}_USER")
-    password = os.getenv(f"{host_name}_PASSWORD")
-    print(username)
-    print(password)
-    print(host)
-
-    if not password or not username or not host:
-        raise Exception('No environment variables set for credentials')
-
-    return host, username, password
-
 
 class RunnerConfig:
     ROOT_DIR = Path(dirname(realpath(__file__)))
@@ -132,6 +99,12 @@ class RunnerConfig:
     def extract_level(self, level):
         return level.lower()
 
+    def interrupt_run(self, context, msg):
+        self.stop_measurement(context)
+        self.stop_run(context)
+        output.console_log_FAIL(msg)
+        raise Exception(msg)
+
     def start_run(self, context: RunnerContext) -> None:
         """Perform any activity required for starting the run here.
         For example, starting the target system to measure.
@@ -139,45 +112,53 @@ class RunnerConfig:
 
         output.console_log("Config.start_run() called!")
 
-        host, username, password = get_credentials('GL6')
-
-        # connect to server
-        con = paramiko.SSHClient()
-        con.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        con.connect(host, username=username, password=password)
-
-        output.console_log("Successfully connected to GL6")
-
+        host_name = HOST.GL6.value
         workload = self.extract_level(context.run_variation['workload'])
-        output.console_log(f"Running with {workload} workload")
+
+        conn_handler = ConnectionHandler(host_name, context)
+        _, _, password = conn_handler.get_credentials()
 
         # start deploying the train ticketing system 
-        stdin, stdout, stderr = con.exec_command("tmux new -s train -d 'cd ~/smartwatts-evaluation/train-ticketing-system; echo {password} | sudo -S docker-compose up'")
+        tts_deployment_start = f"tmux new -s train -d 'cd ~/smartwatts-evaluation/train-ticketing-system; echo { password } | sudo -S docker-compose up'"
+        if(conn_handler.execute_remote_command(tts_deployment_start, f"Running with { workload } workload") == 0):
+            self.interrupt_run(context, "Encountered an error while starting system")
 
-        output.console_log(f"Output: {stdout.read()}")
+        output.console_log("Waiting for the benchmark system to start up...")
 
-        err = stderr.read()
-        if err != b'':
-            output.console_log(err)
-            self.interupt_run(context, "Encountered an error while starting system")
+        # wait for system to start up
+        output.console_log("Sleep 10 minutes...")
+        time.sleep(10*10)
+
+        output.console_log("Benchmark system is up and running")
 
     def start_measurement(self, context: RunnerContext) -> None:
         """Perform any activity required for starting measurements."""
         output.console_log("Config.start_measurement() called!")
         
         file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
-
+        host_name = HOST.GL6.value
         # start SmartWatts profiler on GL6
-        output.console_log("Retrieving credentials for GL6}")
+        output.console_log("Retrieving credentials for GL6")
+        conn_handler = ConnectionHandler(host_name, context)
 
-        _, _, passwordGL6 = get_credentials('GL6')
-        smartwatts_command = f"cd ~/smartwatts-evaluation/train-ticketing-system; echo { passwordGL6 } | sudo docker-compose  { file_name } {context.run_variation['run_number']}"
-        remote_command('GL6', smartwatts_command, "SmartWatts start")
+        _, _, passwordGL6 = conn_handler.get_credentials()
+
+        smartwatts_command = f"tmux new -s smartwatts -d 'cd ~/smartwatts-evaluation/Smartwatts; echo { passwordGL6 } | sudo -S docker-compose up'"
+        if(conn_handler.execute_remote_command(smartwatts_command, "SmartWatts start") == 0):
+            self.interrupt_run(context, "Encountered an error while starting system")
+
 
     def interact(self, context: RunnerContext) -> None:
         """Perform any interaction with the running target system here, or block here until the target finishes."""
 
         output.console_log("Config.interact() called!")
+        workload_value = Workload[context.run_variation['workload']].value
+        output.console_log(f"Load testing with K6 - {context.run_variation['workload']} workload: { workload_value }")
+
+        os.system(f"for i in $(ls /home/gabbie/smartwatts-evaluation/k6-test); "
+                  f"do k6 run - </home/gabbie/smartwatts-evaluation/k6-test/$i/script.js --vus { workload_value } --duration 20s ; done")
+
+        output.console_log('Finished load testing')
 
     def stop_measurement(self, context: RunnerContext) -> None:
         """Perform any activity here required for stopping measurements."""
@@ -189,46 +170,23 @@ class RunnerConfig:
         Activities after stopping the run should also be performed here."""
 
         output.console_log("Config.stop_run() called!")
+        host_name = HOST.GL6.value
+        conn_handler = ConnectionHandler(host_name, context)
 
-        host, username, password = get_credentials('GL6')
+        _, _, password = conn_handler.get_credentials()
 
-        # connect to server
-        con = paramiko.SSHClient()
-        con.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        con.connect(host, username=username, password=password)
+        # restart docker and remove the created resources 
+        prune_docker_volumes = f"echo { password } | sudo -S docker volume prune"
+        conn_handler.execute_remote_command(prune_docker_volumes , "Prune volumes")
 
-        output.console_log("Connection successful")
-        output.console_log('Prune volumes')
+        restart_docker_command = f"echo { password } | sudo -S systemctl restart docker.service"
+        conn_handler.execute_remote_command(restart_docker_command , "Restart docker system")
+        
+        # Kill tmux sessions
+        conn_handler.execute_remote_command("tmux kill-session -t train", "Kill tmux train session")
+        conn_handler.execute_remote_command("tmux kill-session -t smartwatts", "Kill tmux smartwatts session")
 
-        stdin, stdout, stderr = con.exec_command(f"echo { password } | sudo docker volume prune")
 
-        err = stderr.read()
-        if err != b'':
-            output.console_log(err)
-
-        output.console_log('Restart docker system')
-
-        stdin, stdout, stderr = con.exec_command(f"echo {password} | sudo -S systemctl restart docker.service")
-
-        err = stderr.read()
-        if err != b'':
-            output.console_log(err)
-
-        output.console_log('Kill tmux session')
-
-        stdin, stdout, stderr = con.exec_command(f"tmux kill-session -t train")
-
-        err = stderr.read()
-        if err != b'':
-            output.console_log(err)
-
-        output.console_log('Kill netdata if needed')
-
-        stdin, stdout, stderr = con.exec_command(f"echo {password} | sudo -S killall netdata")
-
-        err = stderr.read()
-        if err != b'':
-            output.console_log(err)
 
     def populate_run_data(self, context: RunnerContext) -> Optional[Dict[str, SupportsStr]]:
         """Parse and process any measurement data here.
