@@ -4,18 +4,19 @@ import os
 import paramiko
 
 class ConnectionHandler:
-    def __init__(self, host_name, context):
+    def __init__(self, host_name):
         self.host_name = host_name
-        self.context = context
 
     def execute_remote_command(self, command, command_name):
         con = self.connect_to_host()
         output.console_log(command_name)
         req, out, err = con.exec_command(command)
         err = err.read()
+
         if err != b'':
             output.console_log(err)
             return 0
+
         output.console_log(f"'{command_name}' command successfully executed")
         return 1
 
@@ -40,3 +41,20 @@ class ConnectionHandler:
             raise Exception('No environment variables set for credentials')
 
         return host, username, password
+
+    def get_containers_count(self):
+        conn = self.connect_to_host()
+        _, _, password = self.get_credentials()
+        _, number_of_containers_buf, err = conn.exec_command(f" echo {password} | sudo -S docker ps | wc -l")
+        number_of_containers = int(number_of_containers_buf.read().strip())
+        output.console_log(f"Found {number_of_containers} running after sleeping")
+
+        return number_of_containers
+
+    def start_wattsuppro_logger(self, file_name, context):
+        # start WattsUp profiler on current host
+        file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
+
+        _, _, password = self.get_credentials()
+        watssup_command = f"echo {password} | sudo -S ~/smartwatts-evaluation/wattsup/start_wattsup.sh {file_name} {context.run_variation['run_number']} train-ticket"
+        self.execute_remote_command(watssup_command, f"Start WattsupPro on {self.host_name}")
