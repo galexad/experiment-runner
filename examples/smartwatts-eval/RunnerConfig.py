@@ -20,8 +20,8 @@ import os
 
 
 class HOST(enum.Enum):
+    GL2 = "GL2"
     GL3 = "GL3"
-    GL4 = "GL4"
     GL6 = "GL6"
 
 class Workload(enum.Enum):
@@ -74,7 +74,7 @@ class RunnerConfig:
     def create_run_table_model(self) -> RunTableModel:
         """Create and return the run_table model here. A run_table is a List (rows) of tuples (columns),
         representing each run performed"""        
-        runs_list = ['r{}'.format(i) for i in range(1, 101)]
+        runs_list = ['run_{}'.format(i) for i in range(0, 100)]
         self.run_table_model = RunTableModel(
             factors=[
                 FactorModel("run_number", runs_list),
@@ -97,8 +97,6 @@ class RunnerConfig:
 
         output.console_log("Config.before_run() called!")
 
-    def extract_level(self, level):
-        return level.lower()
 
     def interrupt_run(self, context, msg):
         self.stop_measurement(context)
@@ -106,16 +104,12 @@ class RunnerConfig:
         output.console_log_FAIL(msg)
         raise Exception(msg)
 
+    """ This method deploys the tts"""
     def start_run(self, context: RunnerContext) -> None:
-        """Perform any activity required for starting the run here.
-        For example, starting the target system to measure.
-        Activities after starting the run should also be performed here."""
-
         output.console_log("Config.start_run() called!")
+        workload = context.run_variation['workload'].lower()
 
-        workload = self.extract_level(context.run_variation['workload'])
-
-        conn_handler = ConnectionHandler(self.host_name, context)
+        conn_handler = ConnectionHandler(self.host_name)
         _, _, password = conn_handler.get_credentials()
 
         # start deploying the train ticketing system 
@@ -124,50 +118,92 @@ class RunnerConfig:
             self.interrupt_run(context, "Encountered an error while starting system")
 
         output.console_log("Waiting for the benchmark system to start up...")
+        
         # sleep for 10 minutes until the deployment is complete
+        output.console_log("Sleep for 10 minutes...")
         time.sleep(60 * 10) 
+
+        containers_count = conn_handler.get_containers_count()
+        if containers_count < 68:
+            output.console_log("Sleep for 3 more minutes...")
+            time.sleep(3*60)
+            containers_count = conn_handler.get_containers_count()
+
+        if containers_count < 68:
+            error_msg = f"Not enough containers running: {containers_count}/68"
+            self.interrupt_run(context, error_msg)
+
         output.console_log("Benchmark system is up and running")
 
+    
+    """
+    This method starts the logging of both SmartWatts and WattsupPro profilers' measurements.
+    SmartWatts is running on GL6 and WattsupPro on both GL2 and GL3.
+    """
     def start_measurement(self, context: RunnerContext) -> None:
-        """Perform any activity required for starting measurements."""
         output.console_log("Config.start_measurement() called!")
         
         file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
 
-        # start SmartWatts profiler on GL6
-        conn_handler = ConnectionHandler(self.host_name, context)
-        _, _, passwordGL6 = conn_handler.get_credentials()
+        # start WattsUp profiler on GL3
+        # @TODO configure wattsup to log data continuously(until some file stop_wattsup.sh is ran)
 
-        smartwatts_command = f"tmux new -s smartwatts -d 'cd ~/smartwatts-evaluation/Smartwatts; echo {passwordGL6} | sudo -S docker-compose up'"
-        if(conn_handler.execute_remote_command(smartwatts_command, "SmartWatts start") == 0):
+        # conn_handler = ConnectionHandler(HOST.GL3.value)
+        # conn_handler.start_wattsuppro_logger(file_name, context)
+
+        # # # start WattsUp profiler on GL2
+        # conn_handler = ConnectionHandler(HOST.GL2.value)
+        # conn_handler.start_wattsuppro_logger(file_name, context)
+
+        # start SmartWatts profiler on GL6
+        conn_handler = ConnectionHandler(self.host_name)
+        _, _, password = conn_handler.get_credentials()
+
+        smartwatts_command = f"~/smartwatts-evaluation/smartwatts/start_smartwatts.sh {file_name} {context.run_variation['run_number']}"
+        if(conn_handler.execute_remote_command(smartwatts_command, "Start SmartWatts") == 0):
             self.interrupt_run(context, "Encountered an error while starting system")
 
 
-    def interact(self, context: RunnerContext) -> None:
-        """Perform any interaction with the running target system here, or block here until the target finishes."""
 
+    # Load testing the benchmark system according to different treatments using k6 as a tool
+    def interact(self, context: RunnerContext) -> None:
         output.console_log("Config.interact() called!")
         workload_value = Workload[context.run_variation['workload']].value
         output.console_log(f"Load testing with K6 - {context.run_variation['workload']} workload: {workload_value}")
+        script_path = "~/smartwatts-evaluation/k6-test"
 
-        os.system(f"for i in $(ls ~/smartwatts-evaluation/k6-test); "
-                  f"do k6 run - <~/smartwatts-evaluation/k6-test/$i/script.js --vus {workload_value} --duration 20s ; done")
+        os.system(f"for i in $(ls {script_path}); "
+                  f"do k6 run - < {script_path}/$i/script.js --vus {workload_value} --duration 2s ; done")
 
         output.console_log('Finished load testing')
 
     def stop_measurement(self, context: RunnerContext) -> None:
         """Perform any activity here required for stopping measurements."""
-
         output.console_log("Config.stop_measurement called!")
+
+        # TODO
+        # stop WattsUp profiler on GL2
+        # stop WattsUp profiler on GL3
+
+        conn_handler = ConnectionHandler(self.host_name)
+
+        file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
+
+        stop_smartwatts = f"~/smartwatts-evaluation/smartwatts/stop_smartwatts.sh {file_name} {context.run_variation['run_number']}"
+        conn_handler.execute_remote_command(stop_smartwatts , "Stop Smartwatts ")
+
 
     def stop_run(self, context: RunnerContext) -> None:
         """Perform any activity here required for stopping the run.
         Activities after stopping the run should also be performed here."""
 
         output.console_log("Config.stop_run() called!")
-        conn_handler = ConnectionHandler(self.host_name, context)
+        conn_handler = ConnectionHandler(self.host_name)
 
         _, _, password = conn_handler.get_credentials()
+
+        # Stop the tts system
+        conn_handler.execute_remote_command("tmux kill-session -t train", "Kill tmux train session")
 
         # restart docker and remove the created resources 
         prune_docker_volumes = f"echo {password} | sudo -S docker volume prune"
@@ -176,10 +212,6 @@ class RunnerConfig:
         restart_docker_command = f"echo {password} | sudo -S systemctl restart docker.service"
         conn_handler.execute_remote_command(restart_docker_command , "Restart docker system")
         
-        # Kill tmux sessions
-        conn_handler.execute_remote_command("tmux kill-session -t train", "Kill tmux train session")
-        conn_handler.execute_remote_command("tmux kill-session -t smartwatts", "Kill tmux smartwatts session")
-
 
 
     def populate_run_data(self, context: RunnerContext) -> Optional[Dict[str, SupportsStr]]:
