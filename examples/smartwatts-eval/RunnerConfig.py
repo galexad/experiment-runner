@@ -12,17 +12,12 @@ from pathlib import Path
 from os.path import dirname, realpath
 
 from ConnectionHandler import ConnectionHandler
-
+import datetime
 import paramiko
 import enum
 import time
 import os
 
-
-class HOST(enum.Enum):
-    GL2 = "GL2"
-    GL3 = "GL3"
-    GL6 = "GL6"
 
 class Workload(enum.Enum):
     LOW = 25
@@ -34,7 +29,7 @@ class RunnerConfig:
 
     # ================================ USER SPECIFIC CONFIG ================================
     """The name of the experiment."""
-    name:                       str             = "new_runner_experiment"
+    name:                       str             = "train_ticket_experiment"
 
     """The path in which Experiment Runner will create a folder with the name `self.name`, in order to store the
     results from this experiment. (Path does not need to exist - it will be created if necessary.)
@@ -46,9 +41,9 @@ class RunnerConfig:
 
     """The time Experiment Runner will wait after a run completes.
     This can be essential to accommodate for cooldown periods on some systems."""
-    time_between_runs_in_ms:    int             = 1000
+    time_between_runs_in_ms:    int             = 3 * 60 * 1000
 
-    host_name = HOST.GL6.value 
+    host_name = "GL6" 
 
     # Dynamic configurations can be one-time satisfied here before the program takes the config as-is
     # e.g. Setting some variable based on some criteria
@@ -119,9 +114,8 @@ class RunnerConfig:
 
         output.console_log("Waiting for the benchmark system to start up...")
         
-        # sleep for 10 minutes until the deployment is complete
-        output.console_log("Sleep for 10 minutes...")
-        time.sleep(60 * 10) 
+        output.console_log("Sleep for 3 minutes...")
+        time.sleep(3 * 60) 
 
         containers_count = conn_handler.get_containers_count()
         if containers_count < 68:
@@ -131,35 +125,39 @@ class RunnerConfig:
 
         if containers_count < 68:
             error_msg = f"Not enough containers running: {containers_count}/68"
+            with open('logfile.log', 'a') as file:
+                # Write the error message to the file
+                file.write(f"[{context.run_variation['run_number']}] [{context.run_variation['workload']}] FAILED at {datetime.datetime.now()}\n")
+                conn_handler.execute_remote_command(f"echo {password} | sudo reboot")
+                time.sleep(6*60)
             self.interrupt_run(context, error_msg)
 
+        with open('logfile.log', 'a') as file:
+            file.write(f"[{context.run_variation['run_number']}] [{context.run_variation['workload']}] OK \n")
         output.console_log("Benchmark system is up and running")
 
     
     """
     This method starts the logging of both SmartWatts and WattsupPro profilers' measurements.
-    SmartWatts is running on GL6 and WattsupPro on both GL2 and GL3.
+    SmartWatts is running on GL6 and WattsupPro on both GL2 and GL3's ports.
     """
     def start_measurement(self, context: RunnerContext) -> None:
         output.console_log("Config.start_measurement() called!")
-        
-        file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
-
-        # start WattsUp profiler on GL3
-        # @TODO configure wattsup to log data continuously(until some file stop_wattsup.sh is ran)
-
-        # conn_handler = ConnectionHandler(HOST.GL3.value)
-        # conn_handler.start_wattsuppro_logger(file_name, context)
-
-        # # # start WattsUp profiler on GL2
-        # conn_handler = ConnectionHandler(HOST.GL2.value)
-        # conn_handler.start_wattsuppro_logger(file_name, context)
-
-        # start SmartWatts profiler on GL6
+        run_number = context.run_variation['run_number']
+        file_name = f"{run_number}-{context.run_variation['workload']}"
         conn_handler = ConnectionHandler(self.host_name)
+
         _, _, password = conn_handler.get_credentials()
 
-        smartwatts_command = f"~/smartwatts-evaluation/smartwatts/start_smartwatts.sh {file_name} {context.run_variation['run_number']}"
+        output.console_log("Start Wattsup logging through GL2.. ")
+
+        os.system(f"echo {password} | sudo -S /home/gabbie/smartwatts-evaluation/wattsup/start_wattsup.sh GL2 {file_name} {run_number}")
+        
+        output.console_log("Start Wattsup logging through GL3.. ")
+        os.system(f"echo {password} | sudo -S /home/gabbie/smartwatts-evaluation/wattsup/start_wattsup.sh GL3 {file_name} {run_number}")
+
+        # start SmartWatts profiler on GL6
+        smartwatts_command = f"~/smartwatts-evaluation/smartwatts/start_smartwatts.sh {file_name} {run_number}"
         if(conn_handler.execute_remote_command(smartwatts_command, "Start SmartWatts") == 0):
             self.interrupt_run(context, "Encountered an error while starting system")
 
@@ -173,19 +171,22 @@ class RunnerConfig:
         script_path = "~/smartwatts-evaluation/k6-test"
 
         os.system(f"for i in $(ls {script_path}); "
-                  f"do k6 run - < {script_path}/$i/script.js --vus {workload_value} --duration 2s ; done")
+            f"do k6 run - < {script_path}/$i/script.js --vus {workload_value} --duration 20s ; done")
 
         output.console_log('Finished load testing')
 
     def stop_measurement(self, context: RunnerContext) -> None:
         """Perform any activity here required for stopping measurements."""
         output.console_log("Config.stop_measurement called!")
-
-        # TODO
-        # stop WattsUp profiler on GL2
-        # stop WattsUp profiler on GL3
-
         conn_handler = ConnectionHandler(self.host_name)
+        _, _, password = conn_handler.get_credentials()
+
+        # stop WattsUp profiler on GL2
+        output.console_log("Stop Wattsup logging through GL2.. ")
+        os.system(f"echo {password} | sudo -S /home/gabbie/smartwatts-evaluation/wattsup/stop_wattsup.sh GL2")
+        # stop WattsUp profiler on GL3
+        output.console_log("Stop Wattsup logging through GL3.. ")
+        os.system(f"echo {password} | sudo -S /home/gabbie/smartwatts-evaluation/wattsup/stop_wattsup.sh GL3")
 
         file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
 
@@ -205,20 +206,24 @@ class RunnerConfig:
         # Stop the tts system
         conn_handler.execute_remote_command("tmux kill-session -t train", "Kill tmux train session")
 
-        # restart docker and remove the created resources 
-        prune_docker_volumes = f"echo {password} | sudo -S docker volume prune"
+        # Restart docker and remove the created resources 
+        prune_docker_volumes = f"echo y | echo {password} | sudo -S docker volume prune"
         conn_handler.execute_remote_command(prune_docker_volumes , "Prune volumes")
 
-        restart_docker_command = f"echo {password} | sudo -S systemctl restart docker.service"
-        conn_handler.execute_remote_command(restart_docker_command , "Restart docker system")
-        
+        stop_docker_command = f"echo {password} | sudo -S systemctl stop docker"
+        start_docker_command = f"echo {password} | sudo -S systemctl start docker"
+    
+        conn_handler.execute_remote_command(stop_docker_command , "Stop docker system")
+        # Clean cgroups
+        conn_handler.execute_remote_command(f"echo {password} | sudo -S cgdelete perf_event:docker", "Clean cgroups")
+        conn_handler.execute_remote_command(start_docker_command , "Start docker system")
 
 
     def populate_run_data(self, context: RunnerContext) -> Optional[Dict[str, SupportsStr]]:
         """Parse and process any measurement data here.
         You can also store the raw measurement data under `context.run_dir`
         Returns a dictionary with keys `self.run_table_model.data_columns` and their values populated"""
-
+        
         output.console_log("Config.populate_run_data() called!")
         return None
 

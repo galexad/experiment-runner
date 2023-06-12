@@ -50,11 +50,3 @@ class ConnectionHandler:
         output.console_log(f"Found {number_of_containers} running after sleeping")
 
         return number_of_containers
-
-    def start_wattsuppro_logger(self, file_name, context):
-        # start WattsUp profiler on current host
-        file_name = f"{context.run_variation['run_number']}-{context.run_variation['workload']}"
-
-        _, _, password = self.get_credentials()
-        watssup_command = f"echo {password} | sudo -S ~/smartwatts-evaluation/wattsup/start_wattsup.sh {file_name} {context.run_variation['run_number']} train-ticket"
-        self.execute_remote_command(watssup_command, f"Start WattsupPro on {self.host_name}")
